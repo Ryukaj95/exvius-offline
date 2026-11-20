@@ -89,7 +89,7 @@ def build(source=None):
                 bundle['Bi6hVv34'].append({
                     '2fY1IomW': gid, 'xqartN26': iid,
                     'MxLFKZ13': str(110 + 70 * ((slot - 1) % 2)) + ',' + str(210 + 85 * (slot - 1)),
-                    'Z0EN6jSh': str(slot), '3t7pZM5V': '2',
+                    'Z0EN6jSh': str(slot), '3t7pZM5V': '0',
                     'WJdBp9f0': '1', 'm9BvFk2X': '1'})
                 for part in parts[iid]:
                     bundle['6v0LPiRe'].append({
