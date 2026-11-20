@@ -1,5 +1,6 @@
 """Keep the client boss flag out of reconstructed random exploration rows."""
 from collections import Counter
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -47,6 +48,35 @@ class RandomFieldEncounterTests(unittest.TestCase):
         for mid, (bundle, _) in rebuilt.items():
             with self.subTest(mission=mid):
                 self.assertEqual({r['3t7pZM5V'] for r in bundle['Bi6hVv34']}, {'0'})
+
+
+    def test_all_catalogued_regular_field_groups_avoid_the_boss_flag(self):
+        path = ROOT / 'source/server/event_encounters.json'
+        entries = json.loads(path.read_bytes())['missions']
+        native = {tuple(row[key] for key in ('2fY1IomW', 'Z0EN6jSh', 'xqartN26')): row
+                  for row in battle_content.IndexSource().load('F_BATTLE_GROUP_MST')}
+        for mid, entry in entries.items():
+            authored = entry['bundle']
+            if not authored.get('6v0LPiRe'):
+                continue
+            with self.subTest(mission=mid):
+                reply = battle_content.field_mission_bundle({}, {'qo3PECw6': mid})
+                self.assertEqual(reply['6v0LPiRe'], authored['6v0LPiRe'])
+                random = {row['2fY1IomW'] for row in reply['6v0LPiRe']}
+                scripted = {row['2fY1IomW'] for row in reply.get('YjHhvN65', [])}
+                groups = {}
+                for row in reply['Bi6hVv34']:
+                    groups.setdefault(row['2fY1IomW'], []).append(row)
+                for gid in random - scripted:
+                    rows = groups[gid]
+                    for row in rows:
+                        flag = row['3t7pZM5V']
+                        if flag != '0':
+                            # Rare single-enemy encounters may keep their native boss flag.
+                            key = (gid, row['Z0EN6jSh'], row['xqartN26'])
+                            self.assertEqual(len(rows), 1)
+                            self.assertEqual(flag, '1')
+                            self.assertEqual(native[key]['3t7pZM5V'], flag)
 
 
 if __name__ == '__main__':
