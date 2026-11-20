@@ -1,5 +1,6 @@
 package com.exvius.local;
 
+import android.app.Application;
 import android.content.Context;
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
@@ -16,6 +17,7 @@ import org.json.JSONObject;
 
 public final class LocalGameBridge {
     private static Context context;
+    private static volatile GameplayDisplay gameplayDisplay;
     private static PyObject module;
     private static PyObject game;
 
@@ -29,6 +31,7 @@ public final class LocalGameBridge {
     static synchronized void initialize(Context value) {
         context = value;
         DataUpdates.initialize(context);
+        if (gameplayDisplay == null) gameplayDisplay = new GameplayDisplay((Application) context);
         android.app.job.JobScheduler jobs = (android.app.job.JobScheduler)
             context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
         if (jobs != null) {
@@ -38,6 +41,13 @@ public final class LocalGameBridge {
                     jobs.cancel(job.getId());
             }
         }
+    }
+
+    public static boolean updateGameplayDisplay(int keepAwake, int fullAuto) {
+        GameplayDisplay display = gameplayDisplay;
+        if (display == null) return false;
+        display.setMode(keepAwake != 0, fullAuto != 0);
+        return true;
     }
 
     public static boolean handles(String address) {

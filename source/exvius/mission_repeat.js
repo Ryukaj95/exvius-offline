@@ -45,4 +45,5 @@ export function installMissionRepeat(module, note, retained) {
       note('MISSION_REPEAT_RUN ' + this.run);
     }
   });
+  return () => active;
 }
