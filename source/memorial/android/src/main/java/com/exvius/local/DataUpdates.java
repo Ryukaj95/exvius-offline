@@ -4,20 +4,16 @@ import android.app.Activity;
 import android.app.Application;
 import android.app.DownloadManager;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
-import android.net.Uri;
 import android.os.Bundle;
-import android.provider.Settings;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -29,9 +25,15 @@ import org.json.JSONObject;
 
 /** One complete first download, cached offline play, and static release updates. */
 public final class DataUpdates {
-    private static final String LATEST = "https://raw.githubusercontent.com/Elvlin/exvius-offline/main/data/latest.json";
-    private static final String ASSETS = "https://github.com/Elvlin/exvius-offline/releases/download/";
-    private static final int MAX_UPDATE_INFO_BYTES = 524288;
+    private static final String BOOTSTRAP = "https://raw.githubusercontent.com/Ryukaj95/exvius-offline/b520e563cbc4364a07ee40331012340dc8aeb841/data/latest.json";
+    private static final String BOOTSTRAP_SHA256 = "3f77a7c1f7e13dfbd9343fcb023a2cd609c7669bd44fec09d530cf25881ad093";
+    private static final String SIGNED_LATEST = "https://raw.githubusercontent.com/Ryukaj95/exvius-offline/main/data/latest.signed.json";
+    private static final String UPSTREAM_ASSETS = "https://github.com/Elvlin/exvius-offline/releases/download/";
+    private static final String FORK_ASSETS = "https://github.com/Ryukaj95/exvius-offline/releases/download/";
+    private static final int MAX_MANIFEST_BYTES = 524288;
+    private static final int MAX_UPDATE_INFO_BYTES = 1048576;
+    private static final String PENDING = "pending-authenticated.json";
+    private static final String JOURNAL = "install-progress-authenticated.json";
     // This native app requires the external rules and content introduced in revision 13 (weapon enhancement pages).
     // Raise it whenever the engine needs files from a newer data revision.
     private static final long REQUIRED_DATA_REVISION = 13;
@@ -39,8 +41,7 @@ public final class DataUpdates {
     private static volatile Attempt activeAttempt;
     private static boolean retryRequested;
     private static volatile Progress listener;
-    private static WeakReference<Activity> foreground = new WeakReference<>(null);
-    private static boolean initialized, gameOpened, permissionPrompted, installerShown;
+    private static boolean initialized, gameOpened;
 
     public interface Progress {
         void update(String message, long done, long total, boolean retryAvailable);
@@ -178,13 +179,8 @@ public final class DataUpdates {
         initialized = true;
         ((Application) context.getApplicationContext()).registerActivityLifecycleCallbacks(
             new Application.ActivityLifecycleCallbacks() {
-                public void onActivityResumed(Activity activity) {
-                    foreground = new WeakReference<>(activity);
-                    maybeInstall(activity);
-                }
-                public void onActivityPaused(Activity activity) {
-                    if (foreground.get() == activity) foreground.clear();
-                }
+                public void onActivityResumed(Activity activity) {}
+                public void onActivityPaused(Activity activity) {}
                 public void onActivityCreated(Activity activity, Bundle state) {
                     if (activity.getClass().getName().equals("com.square_enix.android_googleplay.FFBEWW.Lapis"))
                         gameOpened = true;
@@ -201,11 +197,7 @@ public final class DataUpdates {
     }
     public static File dataRoot(Context context) { return state(context, "static"); }
     public static boolean gameOpened() { return gameOpened; }
-    public static void installerReturned() {
-        installerShown = false;
-        permissionPrompted = false;
-    }
-    public static boolean hasPending(Context context) { return state(context, "pending.json").isFile(); }
+    public static boolean hasPending(Context context) { return state(context, PENDING).isFile(); }
     public static boolean clientAssetsMissing(Context context) {
         return installedManifestComplete(context) && !GameAssets.archive(context).isFile();
     }
@@ -251,11 +243,11 @@ public final class DataUpdates {
     private static String read(File file) throws IOException {
         if (file.length() > MAX_UPDATE_INFO_BYTES) throw new IOException("Update information is too large");
         try (FileInputStream input = new FileInputStream(file)) {
-            return readUpdateInfo(input);
+            return new String(readUpdateInfo(input), StandardCharsets.UTF_8);
         }
     }
 
-    private static String readUpdateInfo(InputStream input) throws IOException {
+    private static byte[] readUpdateInfo(InputStream input) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int count;
@@ -264,32 +256,19 @@ public final class DataUpdates {
             if (output.size() + count > MAX_UPDATE_INFO_BYTES) throw new IOException("Update information is too large");
             output.write(buffer, 0, count);
         }
-        return new String(output.toByteArray(), StandardCharsets.UTF_8);
+        return output.toByteArray();
     }
 
-    private static JSONObject fetchLatest(Context context) throws Exception {
-        File updateFolder = context.getExternalFilesDir("updates");
-        File copied = updateFolder == null ? null : new File(updateFolder, "latest.json");
-        JSONObject manual = null;
-        if (copied != null && copied.isFile()) {
-            try {
-                manual = new JSONObject(read(copied));
-                validate(manual);
-            } catch (IOException | org.json.JSONException invalid) {
-                manual = null;
-            }
-            if (!copied.delete()) throw new IOException("Cannot remove copied latest.json");
-        }
-        if (preferences(context).getLong("download_latest", -1) >= 0)
-            clearDownload(context, "latest", ".json");
-        if (manual != null) return manual;
+    private static JSONObject fetchLatest() throws Exception {
+        String publicKey = BuildConfig.UPDATE_PUBLIC_KEY;
+        String url = publicKey.isEmpty() ? BOOTSTRAP : SIGNED_LATEST;
         Exception lastError = null;
         for (int attempt = 1; attempt <= 3; attempt++) {
             checkCancelled();
             progress(attempt == 1 ? "Checking for game data..." :
                 "Checking for game data... (attempt " + attempt + " of 3)", 0, 0);
             try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(LATEST).openConnection();
+                HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
                 connection.setConnectTimeout(30000);
                 connection.setReadTimeout(30000);
                 connection.setInstanceFollowRedirects(true);
@@ -301,7 +280,8 @@ public final class DataUpdates {
                     if (code != HttpURLConnection.HTTP_OK)
                         throw new IOException("Game data server returned HTTP " + code);
                     try (InputStream input = connection.getInputStream()) {
-                        JSONObject manifest = new JSONObject(readUpdateInfo(input));
+                        byte[] response = readUpdateInfo(input);
+                        JSONObject manifest = authenticateManifest(response, publicKey);
                         validate(manifest);
                         finishedTransfer();
                         return manifest;
@@ -310,7 +290,7 @@ public final class DataUpdates {
                     connection.disconnect();
                     disconnected();
                 }
-            } catch (IOException | org.json.JSONException error) {
+            } catch (IOException | org.json.JSONException | java.security.GeneralSecurityException | IllegalArgumentException error) {
                 checkCancelled();
                 lastError = error;
                 if (attempt < 3) Thread.sleep(attempt == 1 ? 2000 : 5000);
@@ -319,6 +299,22 @@ public final class DataUpdates {
         throw new IOException("The game data check failed after 3 attempts. Check your connection and tap Retry. " +
             lastError.getMessage(), lastError);
     }
+    private static JSONObject authenticateManifest(byte[] response, String publicKey) throws Exception {
+        byte[] payload = response;
+        if (publicKey.isEmpty()) {
+            if (!UpdateIntegrity.matchesSha256(payload, BOOTSTRAP_SHA256))
+                throw new IOException("Bootstrap game data manifest failed verification");
+        } else {
+            JSONObject envelope = new JSONObject(new String(response, StandardCharsets.UTF_8));
+            payload = android.util.Base64.decode(envelope.getString("manifest"), android.util.Base64.NO_WRAP);
+            byte[] signature = android.util.Base64.decode(envelope.getString("signature"), android.util.Base64.NO_WRAP);
+            byte[] key = android.util.Base64.decode(publicKey, android.util.Base64.NO_WRAP);
+            if (payload.length > MAX_MANIFEST_BYTES || !UpdateIntegrity.verify(payload, signature, key))
+                throw new IOException("Game data manifest signature is invalid");
+        }
+        return new JSONObject(new String(payload, StandardCharsets.UTF_8));
+    }
+
     private static void write(File file, String text) throws IOException {
         File parent = file.getParentFile();
         if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Cannot create update folder");
@@ -348,7 +344,7 @@ public final class DataUpdates {
         return false;
     }
     private static void validate(JSONObject manifest) throws Exception {
-        if (manifest.getInt("schema") != 1 || manifest.getLong("revision") < 1)
+        if (manifest.getInt("schema") != 1 || manifest.getLong("revision") < REQUIRED_DATA_REVISION)
             throw new IOException("Unsupported update information");
         JSONArray packs = manifest.getJSONArray("packs");
         if (packs.length() < 1 || packs.length() > 1000) throw new IOException("Invalid data pack list");
@@ -356,16 +352,20 @@ public final class DataUpdates {
         for (int i = 0; i < packs.length(); i++) {
             JSONObject pack = packs.getJSONObject(i);
             if (!pack.getString("id").matches("[a-zA-Z0-9_-]{1,80}") || !ids.add(pack.getString("id")) ||
-                !pack.getString("url").startsWith(ASSETS) ||
+                !releaseAsset(pack.getString("url")) ||
                 !pack.getString("sha256").matches("[a-f0-9]{64}") ||
                 pack.getLong("size") < 1 || pack.getLong("size") >= 2147483648L ||
                 pack.getLong("unpackedSize") < 1)
                 throw new IOException("Invalid data pack information");
         }
     }
+    private static boolean releaseAsset(String url) {
+        return url.startsWith(UPSTREAM_ASSETS) || url.startsWith(FORK_ASSETS);
+    }
+
     private static File downloadFile(Context context, String key, String suffix) throws IOException {
-        File folder = context.getExternalFilesDir("updates");
-        if (folder == null || (!folder.isDirectory() && !folder.mkdirs()))
+        File folder = new File(context.getFilesDir(), "exvius/update-downloads");
+        if (!folder.isDirectory() && !folder.mkdirs())
             throw new IOException("Download storage is unavailable");
         return new File(folder, key + suffix);
     }
@@ -380,7 +380,7 @@ public final class DataUpdates {
     }
 
     private static File resumableDownload(Context context, String key, String url, String suffix,
-                                          long base, long total, String label) throws Exception {
+                                          long base, long total, long expectedSize, String label) throws Exception {
         String preference = "download_" + key;
         SharedPreferences saved = preferences(context);
         long staleId = saved.getLong(preference, -1);
@@ -395,7 +395,7 @@ public final class DataUpdates {
             if (!online(context)) throw new IOException("Connect to the internet to finish the game data installation.");
             long before = target.isFile() ? target.length() : 0;
             try {
-                resumeHttp(context, target, url, base, total, label);
+                resumeHttp(target, url, base, total, expectedSize, label);
                 return target;
             } catch (IOException error) {
                 checkCancelled();
@@ -408,8 +408,8 @@ public final class DataUpdates {
         }
     }
 
-    private static void resumeHttp(Context context, File target, String url,
-                                   long base, long total, String label) throws IOException {
+    private static void resumeHttp(File target, String url,
+                                   long base, long total, long expectedSize, String label) throws IOException {
         long offset = target.isFile() ? target.length() : 0;
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setConnectTimeout(30000);
@@ -456,6 +456,8 @@ public final class DataUpdates {
                 long reported = completed;
                 while ((count = input.read(buffer)) != -1) {
                     received();
+                    if (completed + count > expectedSize)
+                        throw new IOException("Download exceeds the authenticated file size");
                     output.write(buffer, 0, count);
                     completed += count;
                     long now = System.currentTimeMillis();
@@ -497,27 +499,17 @@ public final class DataUpdates {
             "\n" + transferRate(bytesPerSecond);
     }
 
-    private static File verifiedPack(Context context, JSONObject pack, long base, long total,
+    private static File downloadPack(Context context, JSONObject pack, long base, long total,
                                      int index, int count) throws Exception {
         String hash = pack.getString("sha256"), key = "data_" + hash;
         File file = downloadFile(context, key, ".zip");
-        File verified = downloadFile(context, key, ".verified");
         long expectedSize = pack.getLong("size");
-        boolean complete = file.isFile() && file.length() == expectedSize;
-        if (!complete)
-            file = resumableDownload(context, key, pack.getString("url"), ".zip", base, total,
+        if (!file.isFile() || file.length() != expectedSize)
+            file = resumableDownload(context, key, pack.getString("url"), ".zip", base, total, expectedSize,
                 "Downloading game data\nPack " + (index + 1) + " of " + count);
         if (file.length() != expectedSize) {
             clearDownload(context, key, ".zip");
             throw new IOException("Downloaded file has the wrong size. Please retry.");
-        }
-        if (!complete || !verified.isFile() || !read(verified).equals(hash)) {
-            progress("Checking downloaded game data...", base, total);
-            if (!DataPack.sha256(file).equals(hash)) {
-                clearDownload(context, key, ".zip");
-                throw new IOException("Game data verification failed. Please retry.");
-            }
-            write(verified, hash);
         }
         return file;
     }
@@ -526,14 +518,17 @@ public final class DataUpdates {
         if (id >= 0) downloads(context).remove(id);
         preferences(context).edit().remove("download_" + key).commit();
         downloadFile(context, key, suffix).delete();
-        downloadFile(context, key, ".verified").delete();
     }
     private static void installPending(Context context, boolean repairAssets) throws Exception {
-        JSONObject manifest = new JSONObject(read(state(context, "pending.json")));
+        JSONObject manifest = new JSONObject(read(state(context, PENDING)));
         validate(manifest);
         JSONObject current = installed(context);
+        if (!canInstall(context, manifest, current)) {
+            state(context, PENDING).delete();
+            throw new IOException("The pending game data is no longer compatible.");
+        }
         JSONArray packs = manifest.getJSONArray("packs");
-        File journalFile = state(context, "install-progress.json");
+        File journalFile = state(context, JOURNAL);
         JSONObject journal = journalFile.isFile() ? new JSONObject(read(journalFile)) : new JSONObject();
         JSONArray completed = journal.optLong("revision") == manifest.getLong("revision") ?
             journal.optJSONArray("completed") : null;
@@ -549,13 +544,11 @@ public final class DataUpdates {
                 transferred += pack.getLong("size");
                 continue;
             }
-            File archive = downloadFile(context, "data_" + pack.getString("sha256"), ".zip");
-            File verified = downloadFile(context, "data_" + pack.getString("sha256"), ".verified");
-            if (!archive.isFile() || archive.length() != pack.getLong("size") || !verified.isFile() ||
-                !read(verified).equals(pack.getString("sha256"))) {
-                if (!archive.isFile() && !online(context))
-                    throw new IOException("Connect to the internet to finish the game data installation.");
-                archive = verifiedPack(context, pack, transferred, total, i, packs.length());
+            File archive = downloadPack(context, pack, transferred, total, i, packs.length());
+            progress("Checking downloaded game data...", transferred, total);
+            if (!DataPack.sha256(archive).equals(pack.getString("sha256"))) {
+                clearDownload(context, "data_" + pack.getString("sha256"), ".zip");
+                throw new IOException("Game data verification failed. Please retry.");
             }
             progress("Installing game data (" + (i + 1) + "/" + packs.length() + ")...", i, packs.length());
             try {
@@ -583,7 +576,7 @@ public final class DataUpdates {
         if (!new File(dataRoot(context), "mst_decoded/F_UNIT_MST.ndjson").isFile())
             throw new IOException("The downloaded game data is incomplete");
         write(state(context, "installed.json"), manifest.toString());
-        state(context, "pending.json").delete();
+        state(context, PENDING).delete();
         journalFile.delete();
         for (int i = 0; i < packs.length(); i++)
             clearDownload(context, "data_" + packs.getJSONObject(i).getString("sha256"), ".zip");
@@ -606,6 +599,11 @@ public final class DataUpdates {
         listener = null;
         begin(context.getApplicationContext(), false, false);
     }
+    private static boolean canInstall(Context context, JSONObject manifest, JSONObject current) throws Exception {
+        return manifest.getInt("minAppVersionCode") <= appVersion(context) &&
+            manifest.getLong("revision") >= current.optLong("revision");
+    }
+
     private static synchronized void begin(Context context, boolean mandatory, boolean repairAssets) {
         if (!working.compareAndSet(false, true)) return;
         new Thread(() -> {
@@ -622,9 +620,11 @@ public final class DataUpdates {
                         if (gameOpened) throw new IOException("Close and reopen Exvius to repair the game assets.");
                         if (!online(context)) throw new IOException("Connect to the internet to repair the game assets.");
                         if (!hasPending(context)) {
-                            File current = state(context, "installed.json");
-                            String manifest = current.isFile() ? read(current) : fetchLatest(context).toString();
-                            write(state(context, "pending.json"), manifest);
+                            JSONObject manifest = fetchLatest();
+                            if (canInstall(context, manifest, installed(context)))
+                                write(state(context, PENDING), manifest.toString());
+                            else
+                                throw new IOException("No compatible game data is available for repair.");
                         }
                         installPending(context, true);
                     } else if (hasPending(context)) {
@@ -632,13 +632,13 @@ public final class DataUpdates {
                             throw new IOException("An update is ready. Fully close Exvius, then open it again to apply the update.");
                         if (mandatory) installPending(context, false);
                     } else {
-                        JSONObject manifest = fetchLatest(context);
+                        JSONObject manifest = fetchLatest();
                         JSONObject current = installed(context);
-                        if (manifest.getInt("minAppVersionCode") <= appVersion(context) &&
+                        if (canInstall(context, manifest, current) &&
                             (!ready(context) || manifest.getLong("revision") > current.optLong("revision"))) {
                             if (mandatory) {
                                 // First installation needs space for only one downloaded part at a time.
-                                write(state(context, "pending.json"), manifest.toString());
+                                write(state(context, PENDING), manifest.toString());
                                 installPending(context, false);
                             } else {
                             JSONArray packs = manifest.getJSONArray("packs");
@@ -650,16 +650,13 @@ public final class DataUpdates {
                             for (int i = 0; i < packs.length(); i++) {
                                 JSONObject pack = packs.getJSONObject(i);
                                 if (installedPack(current, pack)) continue;
-                                verifiedPack(context, pack, done, total, i, packs.length());
+                                downloadPack(context, pack, done, total, i, packs.length());
                                 done += pack.getLong("size");
                             }
-                            write(state(context, "pending.json"), manifest.toString());
+                            write(state(context, PENDING), manifest.toString());
                             // Running games keep their current files. Apply updates on the next launch.
                             }
                         }
-                        JSONObject app = manifest.optJSONObject("app");
-                        if (app != null && app.optInt("versionCode") > appVersion(context))
-                            downloadApp(context, app);
                     }
                     if (mandatory && !ready(context)) failure = "An app update is required. Install it and reopen Exvius.";
                 } catch (Exception error) {
@@ -686,76 +683,5 @@ public final class DataUpdates {
                 return;
             }
         }, "ExviusDataDownload").start();
-    }
-    private static void downloadApp(Context context, JSONObject app) throws Exception {
-        String url = app.getString("url"), hash = app.getString("sha256");
-        if (!url.startsWith(ASSETS) || !hash.matches("[a-f0-9]{64}")) throw new IOException("Invalid app update");
-        pendingApk(context); // Remove legacy installer and downloader keys before reusing the target.
-        File apk = resumableDownload(context, "app_" + hash, url, ".apk", 0, app.getLong("size"),
-            "Downloading app update...");
-        if (apk.length() != app.getLong("size") || !DataPack.sha256(apk).equals(hash)) {
-            clearPendingApk(context, hash);
-            throw new IOException("App update verification failed. Please retry.");
-        }
-        preferences(context).edit().putString("pending_apk", hash).putInt("pending_apk_version", app.getInt("versionCode")).commit();
-        Activity activity = foreground.get();
-        if (activity != null) activity.runOnUiThread(() -> maybeInstall(activity));
-    }
-    private static String pendingApk(Context context) {
-        SharedPreferences saved = preferences(context);
-        Object pending = saved.getAll().get("pending_apk");
-        if (pending instanceof Number) {
-            long id = ((Number) pending).longValue();
-            if (id >= 0) downloads(context).remove(id);
-            SharedPreferences.Editor edit = saved.edit().remove("pending_apk").remove("pending_apk_version");
-            // The old installer and downloader stored the same job under both keys.
-            for (java.util.Map.Entry<String, ?> entry : saved.getAll().entrySet()) {
-                if (entry.getKey().startsWith("download_app_") && entry.getValue() instanceof Number &&
-                    ((Number) entry.getValue()).longValue() == id) edit.remove(entry.getKey());
-            }
-            edit.commit();
-            return null;
-        }
-        return pending instanceof String && ((String) pending).matches("[a-f0-9]{64}") ? (String) pending : null;
-    }
-    private static void clearPendingApk(Context context, String hash) throws IOException {
-        File apk = downloadFile(context, "app_" + hash, ".apk");
-        if (apk.exists() && !apk.delete()) throw new IOException("Cannot remove the app update. Please retry.");
-        SharedPreferences saved = preferences(context);
-        if (hash.equals(saved.getAll().get("pending_apk")))
-            saved.edit().remove("pending_apk").remove("pending_apk_version").commit();
-    }
-    private static void maybeInstall(Activity activity) {
-        try {
-            SharedPreferences saved = preferences(activity);
-            String hash = pendingApk(activity);
-            if (hash == null) return;
-            if (saved.getInt("pending_apk_version", 0) <= appVersion(activity)) {
-                clearPendingApk(activity, hash);
-                return;
-            }
-            if (activity.isFinishing() || installerShown) return;
-            File apk = downloadFile(activity, "app_" + hash, ".apk");
-            if (!apk.isFile()) {
-                clearPendingApk(activity, hash);
-                return;
-            }
-            if (android.os.Build.VERSION.SDK_INT >= 26 && !activity.getPackageManager().canRequestPackageInstalls()) {
-                if (!permissionPrompted) {
-                    permissionPrompted = true;
-                    activity.startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:" + activity.getPackageName())));
-                }
-                return;
-            }
-            Uri uri = new Uri.Builder().scheme("content").authority(activity.getPackageName() + ".fileprovider")
-                .appendPath("updates").appendPath(apk.getName()).build();
-            installerShown = true;
-            activity.startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(uri,
-                "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
-        } catch (Exception error) {
-            installerShown = false;
-            android.util.Log.w("ExviusUpdates", "Android installer is unavailable");
-        }
     }
 }

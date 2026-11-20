@@ -120,7 +120,7 @@ if [ -d "$WORK/../mst_decoded" ] && [ -d "$WORK/out" ]; then
     "$STAGE/ffbe-server-app" stop --data "$SMOKE_ROOT" >/dev/null || true
     exit 1
   fi
-  grep -q "^listening on 0.0.0.0:${SMOKE_PORT}" "$SMOKE_ROOT/state/server.log" \
+  grep -q "^listening on 127.0.0.1:${SMOKE_PORT}" "$SMOKE_ROOT/state/server.log" \
     || { echo "engine never logged listening on :$SMOKE_PORT" >&2; exit 1; }
   # One real encrypted request/response. The in-process goldens cannot see the wire cipher, so without this
   # a request-time crypto regression in the FROZEN engine would ship (audit F1, 2026-10-16).

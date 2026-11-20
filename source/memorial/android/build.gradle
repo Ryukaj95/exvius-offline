@@ -3,18 +3,25 @@ plugins {
     id 'com.chaquo.python' version '16.1.0'
 }
 
+def updatePublicKey = (System.getenv('EXVIUS_UPDATE_PUBLIC_KEY') ?: '').trim()
+if (updatePublicKey && !(updatePublicKey ==~ /[A-Za-z0-9+\/]+={0,2}/)) {
+    throw new GradleException('EXVIUS_UPDATE_PUBLIC_KEY must contain a base64-encoded DER public key')
+}
+
 buildDir = file('../../build/android/local-runtime')
 
 android {
     namespace 'com.exvius.local'
     compileSdk 33
     buildToolsVersion '36.0.0'
+    buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId 'com.exvius.local.runtime'
         minSdk 24
         targetSdk 33
         versionCode 1
         versionName '1'
+        buildConfigField 'String', 'UPDATE_PUBLIC_KEY', '"' + updatePublicKey + '"'
         ndk { abiFilters 'arm64-v8a' }
     }
     compileOptions {

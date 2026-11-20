@@ -88,10 +88,6 @@ public final class DataDownloadActivity extends Activity implements DataUpdates.
         DataUpdates.detach(this);
         super.onDestroy();
     }
-    @Override public void onResume() {
-        super.onResume();
-        DataUpdates.installerReturned();
-    }
 
     @Override public void update(String message, long done, long total, boolean retryAvailable) {
         int attempt = displayAttempt;
