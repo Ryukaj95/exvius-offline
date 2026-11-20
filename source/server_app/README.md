@@ -29,6 +29,8 @@ inside the app.
    for the last step: install this app's certificate on the emulator and point `v900-lapis.gumi.sg` at the
    machine running the server.
 
+The launcher and CLI listen on `127.0.0.1` by default. An emulator on the same host can use its host-loopback alias where supported. For clients on another machine, opt in via **Allow LAN access** in the Server pane or `start --bind 0.0.0.0` in the CLI, and restrict access with your firewall. Install the project CA only in a dedicated emulator. The CA changes trust for the entire emulator.
+
 Prefer a terminal? It is the same app: `ffbe-server-app --help` lists the commands.
 
 ## If something goes wrong

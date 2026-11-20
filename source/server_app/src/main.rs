@@ -57,9 +57,17 @@ struct Config {
     engine_dir: String,
     port: u16,
     mode: Mode,
+    #[serde(default)]
+    allow_lan: bool,
     /// Where to fetch {"version","url","notes"} for the update check; empty disables it.
     #[serde(default)]
     update_url: String,
+}
+
+impl Config {
+    fn bind_address(&self) -> &'static str {
+        if self.allow_lan { "0.0.0.0" } else { "127.0.0.1" }
+    }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -124,6 +132,7 @@ fn load_config() -> Config {
         engine_dir: default_engine_dir().to_string_lossy().into_owned(),
         port: 443,
         mode: Mode::Campaign,
+        allow_lan: false,
         update_url: String::new(),
     };
     if let Some(p) = config_file() {
@@ -330,7 +339,7 @@ fn run_checks(cfg: &Config, engine_info: &EngineInfo) -> Vec<Check> {
 
     out.extend(check_data_root(Path::new(&cfg.data_root)));
 
-    match std::net::TcpListener::bind(("0.0.0.0", cfg.port)) {
+    match std::net::TcpListener::bind((cfg.bind_address(), cfg.port)) {
         Ok(l) => {
             drop(l);
             out.push(Check { label: format!("Port {}", cfg.port), status: Status::Ok, detail: "bind test ok".into(), fix: String::new() });
@@ -737,7 +746,7 @@ impl App {
             Path::new(&self.cfg.engine_dir),
             &self.cfg.data_root,
             self.cfg.port,
-            "0.0.0.0",
+            self.cfg.bind_address(),
             self.cfg.mode,
             contract,
         );
@@ -934,6 +943,8 @@ impl App {
 
         ui.horizontal(|ui| {
             let running = self.server.is_some() || self.external.is_some();
+            ui.add_enabled(!running, egui::Checkbox::new(&mut self.cfg.allow_lan, "Allow LAN access"))
+                .on_hover_text("Use only on a trusted network. The default listens on this computer.");
             if ui.add_enabled(!running, egui::Button::new("Start")).clicked() {
                 self.start_server();
             }
@@ -978,7 +989,7 @@ impl App {
 
     fn ui_android(&mut self, ui: &mut egui::Ui) {
         ui.heading("Android side");
-        ui.label("The client is the unmodified v9.0.0 APK. Two things must be true on the device:");
+        ui.label("Use a dedicated emulator for the unmodified v9.0.0 client. The system CA changes trust for the entire emulator.");
         ui.add_space(4.0);
         ui.label("1. Our lab CA is in the SYSTEM trust store (a user-store install is ignored: targetSdk 33).");
         ui.label("2. v900-lapis.gumi.sg resolves to THIS machine, and the server listens on port 443.");
@@ -1084,7 +1095,7 @@ fn parse_headless(rest: &[String]) -> Result<HeadlessArgs, String> {
         engine: cfg.engine_dir,
         port: cfg.port,
         mode: cfg.mode,
-        bind: "0.0.0.0".to_string(),
+        bind: "127.0.0.1".to_string(),
         extra_env: Vec::new(),
         from: None,
         state: None,

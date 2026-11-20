@@ -188,12 +188,12 @@ def main():
             'com.google.android.c2dm.permission.RECEIVE',
             'android.permission.ACCESS_ADSERVICES_ATTRIBUTION',
             'android.permission.ACCESS_ADSERVICES_AD_ID',
+            'android.permission.REQUEST_INSTALL_PACKAGES',
         }:
             tree.getroot().remove(permission)
     # Only the standard Android updater uses online downloads. Gameplay keeps
     # the existing local connection adapter and blocked native network paths.
-    for name in ('android.permission.INTERNET', 'android.permission.ACCESS_NETWORK_STATE',
-                 'android.permission.REQUEST_INSTALL_PACKAGES'):
+    for name in ('android.permission.INTERNET', 'android.permission.ACCESS_NETWORK_STATE'):
         if not any(p.get(ANDROID + 'name') == name for p in tree.getroot().findall('uses-permission')):
             ET.SubElement(tree.getroot(), 'uses-permission', {ANDROID + 'name': name})
     for provider in tree.getroot().iter('provider'):
