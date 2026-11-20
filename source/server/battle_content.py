@@ -624,10 +624,18 @@ def field_mission_bundle(carrier: dict, mission: dict) -> dict:
     # reads ScenarioBattleGroupMstList, without creating an opening battle.
     # An explicit encounter channel also identifies random-only field data.
     if explicit_field:
+        random_groups = {row['2fY1IomW'] for row in field.get('6v0LPiRe', [])}
+        scripted_groups = {row.get('2fY1IomW') for row in field.get('YjHhvN65', [])}
+        regular_groups = random_groups - scripted_groups
         for tag in ('rqxw0p9k', 'YjHhvN65', 'JR7jZci2', '6v0LPiRe',
                     'Bi6hVv34', 'wbet57nF', 'bV34YIJQ', 'Wp39QX52',
                     'BJ6A0KTt', '7KCkJd1E'):
             for row in field.get(tag, []):
+                # Reconstructed random groups used 2 in the boss flag.
+                # Preserved regular formations use 0. Keep native boss flags.
+                if (tag == 'Bi6hVv34' and row['2fY1IomW'] in regular_groups
+                        and row.get('3t7pZM5V') == '2'):
+                    row = {**row, '3t7pZM5V': '0'}
                 target = out.setdefault(tag, [])
                 if row not in target:
                     target.append(row)
